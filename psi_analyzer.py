@@ -19,6 +19,7 @@ class PSIAnalyzer:
         score_col: str = "score",
         year_col: str = "year",
         month_col: str = "month",
+        reference_env: str = "DEV",
         n_bins: int = 10,
     ) -> None:
         self.df = df
@@ -28,11 +29,12 @@ class PSIAnalyzer:
         self.year_col = year_col
         self.month_col = month_col
         self.n_bins = n_bins
+        self.reference_env = reference_env
 
     def _get_score_cuts(self) -> DataFrame:
         percentiles = [str(i / self.n_bins) for i in range(1, self.n_bins)]
         return (
-            self.df.filter(col(self.env_col) == "DEV")
+            self.df.filter(col(self.env_col) == self.reference_env) 
             .groupBy(self.model_col)
             .agg(
                 F.expr(
@@ -66,7 +68,7 @@ class PSIAnalyzer:
     def _calculate_proportions(self, df: DataFrame, is_reference: bool) -> DataFrame:
         if is_reference:
             counts = (
-                df.filter(col(self.env_col) == "DEV")
+                df.filter(col(self.env_col) == self.reference_env)
                 .groupBy(self.model_col, self.env_col, "faixa_score")
                 .agg(count("*").alias("count"))
             )
@@ -76,7 +78,7 @@ class PSIAnalyzer:
             )
         else:
             counts = (
-                df.filter(col(self.env_col) != "DEV")
+                df.filter(col(self.env_col) != self.reference_env)
                 .groupBy(
                     self.model_col,
                     self.env_col,
