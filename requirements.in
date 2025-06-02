@@ -1,0 +1,7 @@
+pyarrow
+pyspark
+pandas
+matplotlib
+scipy
+seaborn
+# pyarrow==0.14
