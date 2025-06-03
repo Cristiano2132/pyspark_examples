@@ -1,16 +1,37 @@
+# psi_analyzer.py
 from typing import Optional
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.sql.types import IntegerType, StringType
-from pyspark.sql.functions import udf, col, count, lit, log, to_date, concat_ws, lpad
+from pyspark.sql.functions import udf, col, count, lit, to_date, concat_ws, lpad
 
+
+def assign_decile(score: float, cuts: Optional[list]) -> Optional[int]:
+    if cuts is None:
+        return None
+    for i, c in enumerate(cuts):
+        if score <= c:
+            return i + 1
+    return len(cuts) + 1
+
+
+def label_decile(score: float, cuts: Optional[list]) -> Optional[str]:
+    if cuts is None:
+        return None
+    for i, c in enumerate(cuts):
+        if score <= c:
+            return f"<{c:.4f}" if i == 0 else f"{cuts[i-1]:.4f} - {c:.4f}"
+    return f">{cuts[-1]:.4f}"
+
+
+assign_decile_udf = udf(assign_decile, IntegerType())
+label_decile_udf = udf(label_decile, StringType())
+
+# This class `PSIAnalyzer2` in Python is designed to compute the Population Stability Index (PSI) for
+# a given DataFrame based on specified columns and parameters.
 
 class PSIAnalyzer:
-    """
-    Classe responsável por calcular o PSI (Population Stability Index) para modelos de score em ambientes distintos.
-    """
-
     def __init__(
         self,
         df: DataFrame,
@@ -34,7 +55,7 @@ class PSIAnalyzer:
     def _get_score_cuts(self) -> DataFrame:
         percentiles = [str(i / self.n_bins) for i in range(1, self.n_bins)]
         return (
-            self.df.filter(col(self.env_col) == self.reference_env) 
+            self.df.filter(col(self.env_col) == self.reference_env)
             .groupBy(self.model_col)
             .agg(
                 F.expr(
@@ -43,27 +64,12 @@ class PSIAnalyzer:
             )
         )
 
-    def _assign_decile_udf(self):
-        @udf(IntegerType())
-        def assign(score: float, cuts: Optional[list]) -> Optional[int]:
-            if cuts is None:
-                return None
-            for i, c in enumerate(cuts):
-                if score <= c:
-                    return i + 1
-            return len(cuts) + 1
-        return assign
-
-    def _label_decile_udf(self):
-        @udf(StringType())
-        def label(score: float, cuts: Optional[list]) -> Optional[str]:
-            if cuts is None:
-                return None
-            for i, c in enumerate(cuts):
-                if score <= c:
-                    return f"<{c:.4f}" if i == 0 else f"{cuts[i-1]:.4f} - {c:.4f}"
-            return f">{cuts[-1]:.4f}"
-        return label
+    def _assign_deciles_and_labels(self, df: DataFrame, cuts_df: DataFrame) -> DataFrame:
+        return df.join(cuts_df, on=self.model_col, how="left").withColumn(
+            "faixa_score", assign_decile_udf(col(self.score_col), col("cuts"))
+        ).withColumn(
+            "label_faixa_score", label_decile_udf(col(self.score_col), col("cuts"))
+        )
 
     def _calculate_proportions(self, df: DataFrame, is_reference: bool) -> DataFrame:
         if is_reference:
@@ -106,6 +112,7 @@ class PSIAnalyzer:
         df_joined = df_joined.withColumn(
             "psi_component", (safe_ref - safe_out) * F.log(safe_ref / safe_out)
         )
+
         return df_joined.groupBy(
             self.model_col, self.env_col, self.year_col, self.month_col
         ).agg(
@@ -124,26 +131,9 @@ class PSIAnalyzer:
         )
 
     def compute_psi(self) -> DataFrame:
-        """
-        Calcula o PSI (Population Stability Index) entre o ambiente de referência (DEV)
-        e os demais ambientes por modelo e por mês.
-        """
         df = self.df.filter(col(self.score_col).isNotNull())
         cuts_df = self._get_score_cuts()
-
-        assign_decile = self._assign_decile_udf()
-        label_decile = self._label_decile_udf()
-
-        df_with_cuts = df.join(cuts_df, on=self.model_col, how="left")
-
-        df_with_deciles = df_with_cuts.withColumn(
-            "faixa_score", assign_decile(col(self.score_col), col("cuts"))
-        ).withColumn(
-            "label_faixa_score", label_decile(col(self.score_col), col("cuts"))
-        )
-
+        df_with_deciles = self._assign_deciles_and_labels(df, cuts_df)
         df_ref = self._calculate_proportions(df_with_deciles, is_reference=True)
         df_out = self._calculate_proportions(df_with_deciles, is_reference=False)
-        df_psi = self._calculate_psi(df_out, df_ref)
-
-        return df_psi
+        return self._calculate_psi(df_out, df_ref)
