@@ -4,4 +4,5 @@ pandas
 matplotlib
 scipy
 seaborn
+numpy
 # pyarrow==0.14
